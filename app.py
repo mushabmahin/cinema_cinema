@@ -7,28 +7,17 @@ import requests
 import re
 
 # =========================
-# MUST BE FIRST
+# PAGE CONFIG (MUST BE FIRST)
 # =========================
 st.set_page_config(page_title="Movie Recommender", layout="wide")
 
 # =========================
-# SAFE API KEY HANDLING
+# SAFE API KEY
 # =========================
 try:
-    API_KEY = st.secrets.get("TMDB_API_KEY", None)
+    API_KEY = st.secrets["TMDB_API_KEY"]
 except:
     API_KEY = None
-
-# =========================
-# STYLE
-# =========================
-st.markdown("""
-<style>
-img {
-    border-radius: 10px;
-}
-</style>
-""", unsafe_allow_html=True)
 
 # =========================
 # LOAD DATA
@@ -37,34 +26,17 @@ img {
 def load_data():
     movies = pd.read_csv("movies.csv")
     ratings = pd.read_csv("ratings.csv")
-    ratings = ratings.head(20000)  # SAFE LIMIT
+    ratings = ratings.head(20000)  # lightweight
     return movies, ratings
 
 # =========================
-# PREPROCESS
+# LIGHTWEIGHT PREPROCESS
 # =========================
 @st.cache_data
-def preprocess(movies, ratings):
-    user_item = ratings.pivot_table(
-        index='userId',
-        columns='movieId',
-        values='rating'
-    ).fillna(0)
-
-    item_sim = cosine_similarity(user_item.T)
-
+def preprocess(movies):
     movies['genres'] = movies['genres'].fillna("").apply(lambda x: x.split('|'))
     genre_matrix = movies['genres'].str.join('|').str.get_dummies()
-    content_sim = cosine_similarity(genre_matrix)
-
-    min_dim = min(item_sim.shape[0], content_sim.shape[0])
-
-    hybrid = (
-        0.7 * item_sim[:min_dim, :min_dim] +
-        0.3 * content_sim[:min_dim, :min_dim]
-    )
-
-    return movies, hybrid, item_sim
+    return movies, genre_matrix
 
 # =========================
 # CLEAN TITLE
@@ -75,7 +47,7 @@ def clean_title(title):
     return title.strip()
 
 # =========================
-# FETCH POSTER (SAFE)
+# FETCH POSTER
 # =========================
 def fetch_poster(movie_title):
     if not API_KEY:
@@ -96,9 +68,9 @@ def fetch_poster(movie_title):
         return None
 
 # =========================
-# RECOMMEND
+# RECOMMEND (ON-DEMAND SIMILARITY)
 # =========================
-def recommend(movie_title, movies, hybrid, top_n=5):
+def recommend(movie_title, movies, genre_matrix, top_n=5):
     idx = movies[movies['title'] == movie_title].index
 
     if len(idx) == 0:
@@ -106,10 +78,10 @@ def recommend(movie_title, movies, hybrid, top_n=5):
 
     idx = idx[0]
 
-    if idx >= hybrid.shape[0]:
-        return []
+    target = genre_matrix.iloc[idx].values.reshape(1, -1)
+    sim_scores = cosine_similarity(target, genre_matrix)[0]
 
-    scores = list(enumerate(hybrid[idx]))
+    scores = list(enumerate(sim_scores))
     scores = sorted(scores, key=lambda x: x[1], reverse=True)[1:top_n+1]
 
     results = []
@@ -123,10 +95,14 @@ def recommend(movie_title, movies, hybrid, top_n=5):
     return results
 
 # =========================
-# SAFE METRICS (NO CRASH)
+# SAFE RMSE (BASELINE)
 # =========================
 def calculate_rmse(ratings):
-    sample = ratings.sample(1000)
+    if len(ratings) == 0:
+        return 0
+
+    sample_size = min(1000, len(ratings))
+    sample = ratings.sample(sample_size)
 
     actuals = sample['rating']
     preds = np.full(len(actuals), actuals.mean())
@@ -138,13 +114,13 @@ def calculate_rmse(ratings):
 # =========================
 with st.spinner("⚡ Loading model..."):
     movies, ratings = load_data()
-    movies, hybrid, item_sim = preprocess(movies, ratings)
+    movies, genre_matrix = preprocess(movies)
 
 # =========================
 # HEADER
 # =========================
 st.markdown("# 🎬 Hybrid Movie Recommendation System")
-st.info("🔍 Hybrid ML model combining Collaborative Filtering + Content-based filtering")
+st.info("🔍 Lightweight ML recommender using content-based similarity (deployment optimized)")
 
 # =========================
 # METRICS
@@ -156,10 +132,10 @@ rmse = calculate_rmse(ratings)
 col1, col2 = st.columns(2)
 
 with col1:
-    st.metric("RMSE (baseline)", f"{rmse:.3f}")
+    st.metric("Baseline RMSE", f"{rmse:.3f}")
 
 with col2:
-    st.metric("Model Type", "Hybrid (CF + Content)")
+    st.metric("Model Type", "Content-Based (Optimized)")
 
 st.markdown("---")
 
@@ -177,15 +153,13 @@ top_n = st.slider("Recommendations", 3, 10, 5)
 if st.button("🔥 Get Recommendations"):
 
     with st.spinner("🔎 Finding movies you'll love..."):
-        recs = recommend(selected_movie, movies, hybrid, top_n)
+        recs = recommend(selected_movie, movies, genre_matrix, top_n)
 
     if not recs:
         st.error("Movie not found")
 
     else:
-        # =========================
-        # TOP RECOMMENDATION (CENTERED)
-        # =========================
+        # TOP
         st.markdown("## ⭐ Top Recommendation")
 
         top = recs[0]
@@ -207,9 +181,7 @@ if st.button("🔥 Get Recommendations"):
 
         st.markdown("---")
 
-        # =========================
         # GRID
-        # =========================
         st.markdown("## 🎯 More Like This")
 
         num_cols = 4
@@ -237,4 +209,4 @@ if st.button("🔥 Get Recommendations"):
 # FOOTER
 # =========================
 st.markdown("---")
-st.caption("Built with Python • Streamlit • Hybrid ML • Metrics • TMDB API")
+st.caption("Built with Python • Streamlit • Optimized ML for Deployment")
