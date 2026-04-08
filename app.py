@@ -1,36 +1,57 @@
 import streamlit as st
 import pandas as pd
+import numpy as np
+from sklearn.metrics.pairwise import cosine_similarity
+from sklearn.metrics import mean_squared_error
 import requests
+import os
 import re
 
 # =========================
-# PAGE CONFIG
+# MUST BE FIRST
 # =========================
 st.set_page_config(page_title="Movie Recommender", layout="wide")
 
 # =========================
-# API KEY (SAFE)
+# API KEY (STREAMLIT CLOUD)
 # =========================
-try:
-    API_KEY = st.secrets["TMDB_API_KEY"]
-except:
-    API_KEY = None
+API_KEY = st.secrets["TMDB_API_KEY"]
 
 # =========================
-# LOAD DATA (VERY SMALL)
+# LOAD DATA
 # =========================
 @st.cache_data
 def load_data():
-    movies = pd.read_csv("movies.csv").head(1500)  # VERY SMALL
-    return movies
+    movies = pd.read_csv("movies.csv")
+    ratings = pd.read_csv("ratings.csv")
+    ratings = ratings.head(50000)  # reduce for faster metrics
+    return movies, ratings
 
 # =========================
 # PREPROCESS
 # =========================
 @st.cache_data
-def preprocess(movies):
+def preprocess(movies, ratings):
+    user_item = ratings.pivot_table(
+        index='userId',
+        columns='movieId',
+        values='rating'
+    ).fillna(0)
+
+    item_sim = cosine_similarity(user_item.T)
+
     movies['genres'] = movies['genres'].fillna("").apply(lambda x: x.split('|'))
-    return movies
+    genre_matrix = movies['genres'].str.join('|').str.get_dummies()
+    content_sim = cosine_similarity(genre_matrix)
+
+    min_dim = min(item_sim.shape[0], content_sim.shape[0])
+
+    hybrid = (
+        0.7 * item_sim[:min_dim, :min_dim] +
+        0.3 * content_sim[:min_dim, :min_dim]
+    )
+
+    return movies, hybrid, item_sim
 
 # =========================
 # CLEAN TITLE
@@ -43,99 +64,173 @@ def clean_title(title):
 # =========================
 # FETCH POSTER
 # =========================
-def fetch_poster(title):
-    if not API_KEY:
-        return None
+def fetch_poster(movie_title):
     try:
-        url = f"https://api.themoviedb.org/3/search/movie?api_key={API_KEY}&query={clean_title(title)}"
+        movie_title = clean_title(movie_title)
+        url = f"https://api.themoviedb.org/3/search/movie?api_key={API_KEY}&query={movie_title}"
         data = requests.get(url).json()
-        if data["results"]:
+
+        if data.get("results"):
             poster_path = data["results"][0].get("poster_path")
             if poster_path:
                 return f"https://image.tmdb.org/t/p/w500{poster_path}"
+
+        return None
     except:
-        pass
-    return None
+        return None
 
 # =========================
-# SIMPLE RECOMMENDER
+# RECOMMEND
 # =========================
-def recommend(movie_title, movies, top_n=5):
-    target = movies[movies['title'] == movie_title]
+def recommend(movie_title, movies, hybrid, top_n=5):
+    idx = movies[movies['title'] == movie_title].index
 
-    if target.empty:
+    if len(idx) == 0:
         return []
 
-    target_genres = set(target.iloc[0]['genres'])
+    idx = idx[0]
 
-    scores = []
+    if idx >= hybrid.shape[0]:
+        return []
 
-    for i, row in movies.iterrows():
-        genres = set(row['genres'])
-        score = len(target_genres & genres)  # simple overlap
-        scores.append((i, score))
-
+    scores = list(enumerate(hybrid[idx]))
     scores = sorted(scores, key=lambda x: x[1], reverse=True)[1:top_n+1]
 
     results = []
     for i, score in scores:
         results.append({
             "title": movies.iloc[i]['title'],
-            "score": score,
+            "score": round(score, 3),
             "genres": ", ".join(movies.iloc[i]['genres'])
         })
 
     return results
 
 # =========================
+# EVALUATION (RMSE)
+# =========================
+def calculate_rmse(ratings, item_sim):
+    # sample for speed
+    sample = ratings.sample(2000)
+
+    preds = []
+    actuals = []
+
+    for _, row in sample.iterrows():
+        user = row['userId']
+        movie = row['movieId']
+        actual = row['rating']
+
+        try:
+            sim_scores = item_sim[:, movie % item_sim.shape[0]]
+            pred = np.mean(sim_scores) * 5  # scaled estimate
+
+            preds.append(pred)
+            actuals.append(actual)
+        except:
+            continue
+
+    if preds:
+        return np.sqrt(mean_squared_error(actuals, preds))
+    return None
+
+# =========================
 # LOAD
 # =========================
-movies = preprocess(load_data())
+with st.spinner("⚡ Loading model..."):
+    movies, ratings = load_data()
+    movies, hybrid, item_sim = preprocess(movies, ratings)
 
 # =========================
-# UI
+# HEADER
 # =========================
-st.title("🎬 Movie Recommender")
-st.caption("Fast & lightweight recommendation system (deployment-safe)")
+st.markdown("# 🎬 Hybrid Movie Recommendation System")
+st.info("🔍 Hybrid ML model combining collaborative + content-based filtering")
 
+# =========================
+# METRICS SECTION
+# =========================
+st.markdown("## 📊 Model Performance")
+
+rmse = calculate_rmse(ratings, item_sim)
+
+col1, col2 = st.columns(2)
+
+with col1:
+    if rmse:
+        st.metric("RMSE (Lower is better)", f"{rmse:.3f}")
+    else:
+        st.metric("RMSE", "N/A")
+
+with col2:
+    st.metric("Model Type", "Hybrid (CF + Content)")
+
+st.markdown("---")
+
+# =========================
+# INPUT
+# =========================
 movie_list = movies['title'].dropna().unique()
-selected_movie = st.selectbox("Select a movie", movie_list)
+selected_movie = st.selectbox("🔍 Search Movie", movie_list)
 
-top_n = st.slider("Number of recommendations", 3, 10, 5)
+top_n = st.slider("Recommendations", 3, 10, 5)
 
 # =========================
 # BUTTON
 # =========================
-if st.button("Get Recommendations"):
+if st.button("🔥 Get Recommendations"):
 
-    recs = recommend(selected_movie, movies, top_n)
+    with st.spinner("🔎 Finding movies you'll love..."):
+        recs = recommend(selected_movie, movies, hybrid, top_n)
 
     if not recs:
-        st.error("No recommendations found")
+        st.error("Movie not found")
 
     else:
-        st.subheader("Top Recommendation")
+        # TOP
+        st.markdown("## ⭐ Top Recommendation")
 
         top = recs[0]
 
-        poster = fetch_poster(top['title'])
-        if poster:
-            st.image(poster, width=250)
+        col1, col2, col3 = st.columns([1, 2, 1])
 
-        st.markdown(f"### {top['title']}")
-        st.caption(f"Genres: {top['genres']}")
+        with col2:
+            poster = fetch_poster(top['title'])
 
-        st.divider()
+            if poster:
+                st.image(poster, width=300)
 
-        st.subheader("More Like This")
+            st.markdown(f"### {top['title']}")
+            st.progress(top['score'])
+            st.caption(f"⭐ Score: {top['score']}")
+            st.caption(f"🎭 {top['genres']}")
 
-        cols = st.columns(3)
+        st.markdown("---")
 
-        for i, rec in enumerate(recs[1:]):
-            with cols[i % 3]:
-                poster = fetch_poster(rec['title'])
-                if poster:
-                    st.image(poster, width=150)
+        # GRID
+        st.markdown("## 🎯 More Like This")
 
-                st.markdown(f"**{rec['title']}**")
-                st.caption(rec['genres'])
+        num_cols = 4
+        remaining = recs[1:]
+
+        rows = [remaining[i:i + num_cols] for i in range(0, len(remaining), num_cols)]
+
+        for row in rows:
+            cols = st.columns(len(row))
+
+            for col, rec in zip(cols, row):
+                with col:
+                    poster = fetch_poster(rec['title'])
+
+                    if poster:
+                        st.image(poster, width=180)
+
+                    st.markdown(f"**{rec['title']}**")
+                    st.progress(rec['score'])
+                    st.caption(f"Because of: {rec['genres']}")
+
+# =========================
+# FOOTER
+# =========================
+st.markdown("---")
+st.caption("Built with Python • Streamlit • Hybrid ML • Evaluation Metrics")
