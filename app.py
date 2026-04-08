@@ -1,13 +1,12 @@
 import streamlit as st
 import pandas as pd
 import numpy as np
-from sklearn.metrics.pairwise import cosine_similarity
 from sklearn.metrics import mean_squared_error
 import requests
 import re
 
 # =========================
-# PAGE CONFIG (MUST BE FIRST)
+# PAGE CONFIG
 # =========================
 st.set_page_config(page_title="Movie Recommender", layout="wide")
 
@@ -20,23 +19,21 @@ except:
     API_KEY = None
 
 # =========================
-# LOAD DATA
+# LOAD DATA (LIMITED)
 # =========================
 @st.cache_data
 def load_data():
-    movies = pd.read_csv("movies.csv")
-    ratings = pd.read_csv("ratings.csv")
-    ratings = ratings.head(20000)  # lightweight
+    movies = pd.read_csv("movies.csv").head(3000)
+    ratings = pd.read_csv("ratings.csv").head(5000)
     return movies, ratings
 
 # =========================
-# LIGHTWEIGHT PREPROCESS
+# PREPROCESS
 # =========================
 @st.cache_data
 def preprocess(movies):
     movies['genres'] = movies['genres'].fillna("").apply(lambda x: x.split('|'))
-    genre_matrix = movies['genres'].str.join('|').str.get_dummies()
-    return movies, genre_matrix
+    return movies
 
 # =========================
 # CLEAN TITLE
@@ -68,20 +65,29 @@ def fetch_poster(movie_title):
         return None
 
 # =========================
-# RECOMMEND (ON-DEMAND SIMILARITY)
+# SIMPLE SIMILARITY
 # =========================
-def recommend(movie_title, movies, genre_matrix, top_n=5):
-    idx = movies[movies['title'] == movie_title].index
+def simple_similarity(g1, g2):
+    set1, set2 = set(g1), set(g2)
+    return len(set1 & set2) / max(len(set1 | set2), 1)
 
-    if len(idx) == 0:
+# =========================
+# RECOMMEND FUNCTION
+# =========================
+def recommend(movie_title, movies, top_n=5):
+    target = movies[movies['title'] == movie_title]
+
+    if target.empty:
         return []
 
-    idx = idx[0]
+    target_genres = target.iloc[0]['genres']
 
-    target = genre_matrix.iloc[idx].values.reshape(1, -1)
-    sim_scores = cosine_similarity(target, genre_matrix)[0]
+    scores = []
 
-    scores = list(enumerate(sim_scores))
+    for i, row in movies.iterrows():
+        score = simple_similarity(target_genres, row['genres'])
+        scores.append((i, score))
+
     scores = sorted(scores, key=lambda x: x[1], reverse=True)[1:top_n+1]
 
     results = []
@@ -95,15 +101,13 @@ def recommend(movie_title, movies, genre_matrix, top_n=5):
     return results
 
 # =========================
-# SAFE RMSE (BASELINE)
+# METRICS
 # =========================
 def calculate_rmse(ratings):
     if len(ratings) == 0:
         return 0
 
-    sample_size = min(1000, len(ratings))
-    sample = ratings.sample(sample_size)
-
+    sample = ratings.sample(min(1000, len(ratings)))
     actuals = sample['rating']
     preds = np.full(len(actuals), actuals.mean())
 
@@ -114,30 +118,26 @@ def calculate_rmse(ratings):
 # =========================
 with st.spinner("⚡ Loading model..."):
     movies, ratings = load_data()
-    movies, genre_matrix = preprocess(movies)
+    movies = preprocess(movies)
 
 # =========================
 # HEADER
 # =========================
-st.markdown("# 🎬 Hybrid Movie Recommendation System")
-st.info("🔍 Lightweight ML recommender using content-based similarity (deployment optimized)")
+st.title("🎬 Movie Recommendation System")
+st.info("Lightweight content-based recommender optimized for real-time deployment")
 
 # =========================
 # METRICS
 # =========================
-st.markdown("## 📊 Model Performance")
+st.subheader("📊 Model Performance")
 
 rmse = calculate_rmse(ratings)
 
 col1, col2 = st.columns(2)
+col1.metric("Baseline RMSE", f"{rmse:.3f}")
+col2.metric("Model Type", "Content-Based (Optimized)")
 
-with col1:
-    st.metric("Baseline RMSE", f"{rmse:.3f}")
-
-with col2:
-    st.metric("Model Type", "Content-Based (Optimized)")
-
-st.markdown("---")
+st.divider()
 
 # =========================
 # INPUT
@@ -152,15 +152,14 @@ top_n = st.slider("Recommendations", 3, 10, 5)
 # =========================
 if st.button("🔥 Get Recommendations"):
 
-    with st.spinner("🔎 Finding movies you'll love..."):
-        recs = recommend(selected_movie, movies, genre_matrix, top_n)
+    recs = recommend(selected_movie, movies, top_n)
 
     if not recs:
         st.error("Movie not found")
 
     else:
         # TOP
-        st.markdown("## ⭐ Top Recommendation")
+        st.subheader("⭐ Top Recommendation")
 
         top = recs[0]
 
@@ -179,34 +178,28 @@ if st.button("🔥 Get Recommendations"):
             st.caption(f"⭐ Score: {top['score']}")
             st.caption(f"🎭 {top['genres']}")
 
-        st.markdown("---")
+        st.divider()
 
         # GRID
-        st.markdown("## 🎯 More Like This")
+        st.subheader("🎯 More Like This")
 
-        num_cols = 4
-        remaining = recs[1:]
+        cols = st.columns(4)
 
-        rows = [remaining[i:i + num_cols] for i in range(0, len(remaining), num_cols)]
+        for i, rec in enumerate(recs[1:]):
+            with cols[i % 4]:
+                poster = fetch_poster(rec['title'])
 
-        for row in rows:
-            cols = st.columns(len(row))
+                if poster:
+                    st.image(poster, width=180)
+                else:
+                    st.image("https://via.placeholder.com/300x450?text=No+Image")
 
-            for col, rec in zip(cols, row):
-                with col:
-                    poster = fetch_poster(rec['title'])
-
-                    if poster:
-                        st.image(poster, width=180)
-                    else:
-                        st.image("https://via.placeholder.com/300x450?text=No+Image")
-
-                    st.markdown(f"**{rec['title']}**")
-                    st.progress(rec['score'])
-                    st.caption(f"Because of: {rec['genres']}")
+                st.markdown(f"**{rec['title']}**")
+                st.progress(rec['score'])
+                st.caption(f"{rec['genres']}")
 
 # =========================
 # FOOTER
 # =========================
-st.markdown("---")
-st.caption("Built with Python • Streamlit • Optimized ML for Deployment")
+st.divider()
+st.caption("Built with Python • Streamlit • Lightweight ML")
