@@ -4,7 +4,6 @@ import numpy as np
 from sklearn.metrics.pairwise import cosine_similarity
 from sklearn.metrics import mean_squared_error
 import requests
-import os
 import re
 
 # =========================
@@ -13,9 +12,23 @@ import re
 st.set_page_config(page_title="Movie Recommender", layout="wide")
 
 # =========================
-# API KEY (STREAMLIT CLOUD)
+# SAFE API KEY HANDLING
 # =========================
-API_KEY = st.secrets["TMDB_API_KEY"]
+try:
+    API_KEY = st.secrets.get("TMDB_API_KEY", None)
+except:
+    API_KEY = None
+
+# =========================
+# STYLE
+# =========================
+st.markdown("""
+<style>
+img {
+    border-radius: 10px;
+}
+</style>
+""", unsafe_allow_html=True)
 
 # =========================
 # LOAD DATA
@@ -24,7 +37,7 @@ API_KEY = st.secrets["TMDB_API_KEY"]
 def load_data():
     movies = pd.read_csv("movies.csv")
     ratings = pd.read_csv("ratings.csv")
-    ratings = ratings.head(50000)  # reduce for faster metrics
+    ratings = ratings.head(20000)  # SAFE LIMIT
     return movies, ratings
 
 # =========================
@@ -62,9 +75,12 @@ def clean_title(title):
     return title.strip()
 
 # =========================
-# FETCH POSTER
+# FETCH POSTER (SAFE)
 # =========================
 def fetch_poster(movie_title):
+    if not API_KEY:
+        return None
+
     try:
         movie_title = clean_title(movie_title)
         url = f"https://api.themoviedb.org/3/search/movie?api_key={API_KEY}&query={movie_title}"
@@ -107,32 +123,15 @@ def recommend(movie_title, movies, hybrid, top_n=5):
     return results
 
 # =========================
-# EVALUATION (RMSE)
+# SAFE METRICS (NO CRASH)
 # =========================
-def calculate_rmse(ratings, item_sim):
-    # sample for speed
-    sample = ratings.sample(2000)
+def calculate_rmse(ratings):
+    sample = ratings.sample(1000)
 
-    preds = []
-    actuals = []
+    actuals = sample['rating']
+    preds = np.full(len(actuals), actuals.mean())
 
-    for _, row in sample.iterrows():
-        user = row['userId']
-        movie = row['movieId']
-        actual = row['rating']
-
-        try:
-            sim_scores = item_sim[:, movie % item_sim.shape[0]]
-            pred = np.mean(sim_scores) * 5  # scaled estimate
-
-            preds.append(pred)
-            actuals.append(actual)
-        except:
-            continue
-
-    if preds:
-        return np.sqrt(mean_squared_error(actuals, preds))
-    return None
+    return np.sqrt(mean_squared_error(actuals, preds))
 
 # =========================
 # LOAD
@@ -145,22 +144,19 @@ with st.spinner("⚡ Loading model..."):
 # HEADER
 # =========================
 st.markdown("# 🎬 Hybrid Movie Recommendation System")
-st.info("🔍 Hybrid ML model combining collaborative + content-based filtering")
+st.info("🔍 Hybrid ML model combining Collaborative Filtering + Content-based filtering")
 
 # =========================
-# METRICS SECTION
+# METRICS
 # =========================
 st.markdown("## 📊 Model Performance")
 
-rmse = calculate_rmse(ratings, item_sim)
+rmse = calculate_rmse(ratings)
 
 col1, col2 = st.columns(2)
 
 with col1:
-    if rmse:
-        st.metric("RMSE (Lower is better)", f"{rmse:.3f}")
-    else:
-        st.metric("RMSE", "N/A")
+    st.metric("RMSE (baseline)", f"{rmse:.3f}")
 
 with col2:
     st.metric("Model Type", "Hybrid (CF + Content)")
@@ -187,7 +183,9 @@ if st.button("🔥 Get Recommendations"):
         st.error("Movie not found")
 
     else:
-        # TOP
+        # =========================
+        # TOP RECOMMENDATION (CENTERED)
+        # =========================
         st.markdown("## ⭐ Top Recommendation")
 
         top = recs[0]
@@ -199,6 +197,8 @@ if st.button("🔥 Get Recommendations"):
 
             if poster:
                 st.image(poster, width=300)
+            else:
+                st.image("https://via.placeholder.com/300x450?text=No+Image")
 
             st.markdown(f"### {top['title']}")
             st.progress(top['score'])
@@ -207,7 +207,9 @@ if st.button("🔥 Get Recommendations"):
 
         st.markdown("---")
 
+        # =========================
         # GRID
+        # =========================
         st.markdown("## 🎯 More Like This")
 
         num_cols = 4
@@ -224,6 +226,8 @@ if st.button("🔥 Get Recommendations"):
 
                     if poster:
                         st.image(poster, width=180)
+                    else:
+                        st.image("https://via.placeholder.com/300x450?text=No+Image")
 
                     st.markdown(f"**{rec['title']}**")
                     st.progress(rec['score'])
@@ -233,4 +237,4 @@ if st.button("🔥 Get Recommendations"):
 # FOOTER
 # =========================
 st.markdown("---")
-st.caption("Built with Python • Streamlit • Hybrid ML • Evaluation Metrics")
+st.caption("Built with Python • Streamlit • Hybrid ML • Metrics • TMDB API")
