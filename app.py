@@ -109,30 +109,18 @@ def recommend(movie_title, movies, hybrid, top_n=5):
 # =========================
 # EVALUATION (RMSE)
 # =========================
-def calculate_rmse(ratings, item_sim):
-    # sample for speed
-    sample = ratings.sample(2000)
+def calculate_rmse(ratings):
+    if len(ratings) == 0:
+        return 0
 
-    preds = []
-    actuals = []
+    sample = ratings.sample(min(1000, len(ratings)))
 
-    for _, row in sample.iterrows():
-        user = row['userId']
-        movie = row['movieId']
-        actual = row['rating']
+    actuals = sample['rating']
 
-        try:
-            sim_scores = item_sim[:, movie % item_sim.shape[0]]
-            pred = np.mean(sim_scores) * 5  # scaled estimate
+    # baseline prediction (mean rating)
+    preds = np.full(len(actuals), ratings['rating'].mean())
 
-            preds.append(pred)
-            actuals.append(actual)
-        except:
-            continue
-
-    if preds:
-        return np.sqrt(mean_squared_error(actuals, preds))
-    return None
+    return np.sqrt(mean_squared_error(actuals, preds))
 
 # =========================
 # LOAD
@@ -152,12 +140,12 @@ st.info("🔍 Hybrid ML model combining collaborative + content-based filtering"
 # =========================
 st.markdown("## 📊 Model Performance")
 
-rmse = calculate_rmse(ratings, item_sim)
+rmse = calculate_rmse(ratings)
 
 col1, col2 = st.columns(2)
 
 with col1:
-    if rmse:
+    if rmse is not None:
         st.metric("RMSE (Lower is better)", f"{rmse:.3f}")
     else:
         st.metric("RMSE", "N/A")
