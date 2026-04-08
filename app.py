@@ -15,8 +15,7 @@ st.set_page_config(page_title="Movie Recommender", layout="wide")
 # =========================
 # LOAD ENV
 # =========================
-load_dotenv()
-API_KEY = os.getenv("TMDB_API_KEY")
+API_KEY = st.secrets["TMDB_API_KEY"]
 
 # =========================
 # STYLE (SMALL UI UPGRADE)
