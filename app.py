@@ -1,7 +1,5 @@
 import streamlit as st
 import pandas as pd
-import numpy as np
-from sklearn.metrics import mean_squared_error
 import requests
 import re
 
@@ -11,7 +9,7 @@ import re
 st.set_page_config(page_title="Movie Recommender", layout="wide")
 
 # =========================
-# SAFE API KEY
+# API KEY (SAFE)
 # =========================
 try:
     API_KEY = st.secrets["TMDB_API_KEY"]
@@ -19,13 +17,12 @@ except:
     API_KEY = None
 
 # =========================
-# LOAD DATA (LIMITED)
+# LOAD DATA (VERY SMALL)
 # =========================
 @st.cache_data
 def load_data():
-    movies = pd.read_csv("movies.csv").head(3000)
-    ratings = pd.read_csv("ratings.csv").head(5000)
-    return movies, ratings
+    movies = pd.read_csv("movies.csv").head(1500)  # VERY SMALL
+    return movies
 
 # =========================
 # PREPROCESS
@@ -46,33 +43,22 @@ def clean_title(title):
 # =========================
 # FETCH POSTER
 # =========================
-def fetch_poster(movie_title):
+def fetch_poster(title):
     if not API_KEY:
         return None
-
     try:
-        movie_title = clean_title(movie_title)
-        url = f"https://api.themoviedb.org/3/search/movie?api_key={API_KEY}&query={movie_title}"
+        url = f"https://api.themoviedb.org/3/search/movie?api_key={API_KEY}&query={clean_title(title)}"
         data = requests.get(url).json()
-
-        if data.get("results"):
+        if data["results"]:
             poster_path = data["results"][0].get("poster_path")
             if poster_path:
                 return f"https://image.tmdb.org/t/p/w500{poster_path}"
-
-        return None
     except:
-        return None
+        pass
+    return None
 
 # =========================
-# SIMPLE SIMILARITY
-# =========================
-def simple_similarity(g1, g2):
-    set1, set2 = set(g1), set(g2)
-    return len(set1 & set2) / max(len(set1 | set2), 1)
-
-# =========================
-# RECOMMEND FUNCTION
+# SIMPLE RECOMMENDER
 # =========================
 def recommend(movie_title, movies, top_n=5):
     target = movies[movies['title'] == movie_title]
@@ -80,12 +66,13 @@ def recommend(movie_title, movies, top_n=5):
     if target.empty:
         return []
 
-    target_genres = target.iloc[0]['genres']
+    target_genres = set(target.iloc[0]['genres'])
 
     scores = []
 
     for i, row in movies.iterrows():
-        score = simple_similarity(target_genres, row['genres'])
+        genres = set(row['genres'])
+        score = len(target_genres & genres)  # simple overlap
         scores.append((i, score))
 
     scores = sorted(scores, key=lambda x: x[1], reverse=True)[1:top_n+1]
@@ -94,112 +81,61 @@ def recommend(movie_title, movies, top_n=5):
     for i, score in scores:
         results.append({
             "title": movies.iloc[i]['title'],
-            "score": round(score, 3),
+            "score": score,
             "genres": ", ".join(movies.iloc[i]['genres'])
         })
 
     return results
 
 # =========================
-# METRICS
-# =========================
-def calculate_rmse(ratings):
-    if len(ratings) == 0:
-        return 0
-
-    sample = ratings.sample(min(1000, len(ratings)))
-    actuals = sample['rating']
-    preds = np.full(len(actuals), actuals.mean())
-
-    return np.sqrt(mean_squared_error(actuals, preds))
-
-# =========================
 # LOAD
 # =========================
-with st.spinner("⚡ Loading model..."):
-    movies, ratings = load_data()
-    movies = preprocess(movies)
+movies = preprocess(load_data())
 
 # =========================
-# HEADER
+# UI
 # =========================
-st.title("🎬 Movie Recommendation System")
-st.info("Lightweight content-based recommender optimized for real-time deployment")
+st.title("🎬 Movie Recommender")
+st.caption("Fast & lightweight recommendation system (deployment-safe)")
 
-# =========================
-# METRICS
-# =========================
-st.subheader("📊 Model Performance")
-
-rmse = calculate_rmse(ratings)
-
-col1, col2 = st.columns(2)
-col1.metric("Baseline RMSE", f"{rmse:.3f}")
-col2.metric("Model Type", "Content-Based (Optimized)")
-
-st.divider()
-
-# =========================
-# INPUT
-# =========================
 movie_list = movies['title'].dropna().unique()
-selected_movie = st.selectbox("🔍 Search Movie", movie_list)
+selected_movie = st.selectbox("Select a movie", movie_list)
 
-top_n = st.slider("Recommendations", 3, 10, 5)
+top_n = st.slider("Number of recommendations", 3, 10, 5)
 
 # =========================
 # BUTTON
 # =========================
-if st.button("🔥 Get Recommendations"):
+if st.button("Get Recommendations"):
 
     recs = recommend(selected_movie, movies, top_n)
 
     if not recs:
-        st.error("Movie not found")
+        st.error("No recommendations found")
 
     else:
-        # TOP
-        st.subheader("⭐ Top Recommendation")
+        st.subheader("Top Recommendation")
 
         top = recs[0]
 
-        col1, col2, col3 = st.columns([1, 2, 1])
+        poster = fetch_poster(top['title'])
+        if poster:
+            st.image(poster, width=250)
 
-        with col2:
-            poster = fetch_poster(top['title'])
-
-            if poster:
-                st.image(poster, width=300)
-            else:
-                st.image("https://via.placeholder.com/300x450?text=No+Image")
-
-            st.markdown(f"### {top['title']}")
-            st.progress(top['score'])
-            st.caption(f"⭐ Score: {top['score']}")
-            st.caption(f"🎭 {top['genres']}")
+        st.markdown(f"### {top['title']}")
+        st.caption(f"Genres: {top['genres']}")
 
         st.divider()
 
-        # GRID
-        st.subheader("🎯 More Like This")
+        st.subheader("More Like This")
 
-        cols = st.columns(4)
+        cols = st.columns(3)
 
         for i, rec in enumerate(recs[1:]):
-            with cols[i % 4]:
+            with cols[i % 3]:
                 poster = fetch_poster(rec['title'])
-
                 if poster:
-                    st.image(poster, width=180)
-                else:
-                    st.image("https://via.placeholder.com/300x450?text=No+Image")
+                    st.image(poster, width=150)
 
                 st.markdown(f"**{rec['title']}**")
-                st.progress(rec['score'])
-                st.caption(f"{rec['genres']}")
-
-# =========================
-# FOOTER
-# =========================
-st.divider()
-st.caption("Built with Python • Streamlit • Lightweight ML")
+                st.caption(rec['genres'])
